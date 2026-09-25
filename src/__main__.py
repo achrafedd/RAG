@@ -15,7 +15,11 @@ install()
 
 class RAG(object):
     def __init__(self) -> None:
-        self.path: Path = Path("./vllm-0.10.1")
+        self.path: Path = Path("data/")
+        self.data: Path = self.path / "raw/vllm-0.10.1/"
+        self.processed: Path = self.path / "processed/bm25s_index"
+        self.dataset: Path = self.path / "datasets_public/"
+        self.output: Path = self.path / "output/"
         self.chunks: list[dict[str, Any]] = []
         self.ext: set[str] = {".py", ".md", ".txt"}
         self.retriever: bm25s.BM25 = bm25s.BM25()
@@ -41,7 +45,7 @@ class RAG(object):
         with Progress() as progress:
             files = [
                 file
-                for file in self.path.rglob("*")
+                for file in self.data.rglob("*")
                 if file.suffix in self.ext
             ]
             task = progress.add_task("Chunking: ", total=len(files))
@@ -49,11 +53,11 @@ class RAG(object):
                 splitter = splitters[file.suffix]
                 splitted_text = splitter.split_text(file.read_text())
                 self._save_chunks(splitted_text, file)
-                progress.update(task, advance=(idx / len(files) * 2))
+                progress.update(task, advance=(len(files) * 0.01))
 
             chunks_tokens = bm25s.tokenize([el["data"] for el in self.chunks])
             self.retriever.index(chunks_tokens)
-            self.retriever.save("data/processed/bm25s_index")
+            self.retriever.save(str(self.processed))
             print(
                 f"Ingestion complete! Indexed {len(self.chunks)} chunks under data/processed"
             )
@@ -74,9 +78,11 @@ class RAG(object):
             )
 
     def search(self, query: str, k: int = 1) -> MinimalSearchResults:
-        retriever = self.retriever.load("data/processed/bm25s_index/")
-        query_tokens = bm25s.tokenize([query])
-        results, _ = retriever.retrieve(query_tokens, k=k)
+        retriever = self.retriever.load(
+            str(self.processed), show_progress=False
+        )
+        query_tokens = bm25s.tokenize([query], show_progress=False)
+        results, _ = retriever.retrieve(query_tokens, k=k, show_progress=False)
         with open("chunks.json") as file:
             chunks = json.load(file)
 
@@ -105,10 +111,15 @@ class RAG(object):
                 search_results=search_result, k=k
             )
 
-        with open(save_directory, "w+") as file:
+        full_path = (
+            self.output
+            / f"{save_directory.strip('/')}/student_search_results.json"
+        )
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(full_path, "w+") as file:
             json.dump(student_search.model_dump(), file, indent=4)
 
-    def answer(self, query: str, k: int):
+    def answer(self, query: str, k: int = 1) -> MinimalAnswer:
         search_result: MinimalSearchResults = self.search(query, k)
         augmented_query = (
             "system:\n"
@@ -118,7 +129,7 @@ class RAG(object):
             "Context:\n\n"
         )
         for idx, result in enumerate(search_result.retrieved_sources, start=1):
-            with open(result.file_path) as file:
+            with open(result.file_path, errors="replace") as file:
                 file.seek(result.first_character_index)
                 data = file.read(
                     result.last_character_index - result.first_character_index
@@ -129,7 +140,36 @@ class RAG(object):
         augmented_query += f"Question: {query}\n\n"
         augmented_query += "Answer, citing sources by number where relevant."
         content = self.model.dwiha(augmented_query)
-        print(content)
+        return MinimalAnswer(answer=content, **search_result.model_dump())
+
+    def answer_dataset(
+        self, student_search_results_path: str, save_directory: str
+    ) -> None:
+        answers: list[MinimalAnswer] = []
+        with open(student_search_results_path) as file:
+            search_results = StudentSearchResults(**json.load(file))
+            with Progress() as progress:
+                task3 = progress.add_task(
+                    "answering questions: ",
+                    total=len(search_results.search_results),
+                )
+                for res in search_results.search_results:
+                    answers.append(self.answer(res.question, search_results.k))
+                    progress.update(
+                        task3,
+                        advance=len(search_results.search_results) * 0.01,
+                    )
+
+        search_results_and_answer = StudentSearchResultsAndAnswer(
+            search_results=answers, k=search_results.k
+        )
+
+        path = Path(save_directory) / "result.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w+") as file:
+            json.dump(search_results_and_answer.model_dump(), file, indent=4)
+
+        print(f"Saved Student_search_results_and_answer to {path}")
 
 
 if __name__ == "__main__":
