@@ -1,7 +1,6 @@
 {
     "venvPath": "/home/aeddiba/goinfre/",
     "venv": "uv-envs",
-    "pythonPath": "/home/aeddiba/goinfre/uv-envs/bin/python",
     "typeCheckingMode": "standard",
     "reportMissingTypeStubs": false,
     "reportUnknownMemberType": false,
