@@ -5,18 +5,18 @@ import uuid
 from rich import print
 
 
-from lexical import Lexical
-from rrf import reciprocal_rank_fusion
-from semantic import Semantic
+from .lexical import Lexical
+from .rrf import reciprocal_rank_fusion
+from .semantic import Semantic
 
 from tqdm import tqdm
 
 from langchain_core.documents.base import Document
 from rich.progress import Progress
-from LLM import Lmachine
+from .LLM import Lmachine
 import fire
 from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
-from Models import (
+from .Models import (
     MinimalAnswer,
     MinimalSearchResults,
     MinimalSource,
@@ -29,7 +29,7 @@ from Models import (
 class RAG(object):
     def __init__(self) -> None:
         self.path: Path = Path("data/")
-        self.data: Path = self.path / "raw/vllm-0.10.1/"
+        self.data: Path = self.path / "raw/vllm-0.10.1"
         self.output: Path = self.path / "output/"
         self.chunks: list[dict[str, Any]] = []
         self.ext: set[str] = {".py", ".md", ".txt"}
@@ -98,8 +98,8 @@ class RAG(object):
             )
 
     def search(self, query: str, k: int = 1) -> MinimalSearchResults:
-        semantic_results = self.semantic.search(query, k)
-        lexical_results = self.lexical.search(query, k)
+        semantic_results = self.semantic.search(query, k * 2)
+        lexical_results = self.lexical.search(query, k * 2)
         combined_results = reciprocal_rank_fusion(
             [semantic_results, lexical_results]
         )
@@ -165,7 +165,7 @@ class RAG(object):
                 )
 
         augmented_query += f"Question: {query}\n\n"
-        augmented_query += "Answer, citing sources by number where relevant."
+        augmented_query += "Answer: "
         content = self.model.dwiha(augmented_query)
         if content is None:
             raise ValueError("Ok bon8 a khoya!")

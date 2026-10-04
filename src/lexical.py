@@ -22,7 +22,7 @@ class Lexical:
         query_tokens = bm25s.tokenize([query])
         results, _ = retriever.retrieve(query_tokens, k=k)
         lexical_results = []
-        for idx, metadatas in enumerate(results[0], start=1):
+        for metadatas in results[0]:
             lexical_results.append(
                 (
                     metadatas["id"],

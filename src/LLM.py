@@ -24,7 +24,7 @@ class Lmachine:
         )
 
         generated_ids = self.model.generate(
-            **model_inputs, max_new_tokens=32768
+            **model_inputs, max_new_tokens=3276802
         )
 
         output_ids = generated_ids[0][
