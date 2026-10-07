@@ -1,8 +1,8 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from src.__main__ import RAG
+from .__main__ import RAG
 
 app = FastAPI()
 
@@ -13,12 +13,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class Query(BaseModel):
     message: str
     k: int = 5
 
-@app.post('/')
+
+rag = RAG()
+
+
+@app.post("/")
 def search(q: Query):
-    rag = RAG()
     answer = rag.answer(q.message, k=q.k)
-    return {'message': answer.answer}
+    return {"message": answer.answer}

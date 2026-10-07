@@ -1,29 +1,26 @@
 import json
+import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
-import uuid
-from rich import print
 
-
-from .lexical import Lexical
-from .rrf import reciprocal_rank_fusion
-from .semantic import Semantic
-
+import fire
+from langchain_core.documents.base import Document
+from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 from tqdm import tqdm
 
-from langchain_core.documents.base import Document
-from rich.progress import Progress
+from .lexical import Lexical
 from .LLM import Lmachine
-import fire
-from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
 from .Models import (
     MinimalAnswer,
     MinimalSearchResults,
     MinimalSource,
-    StudentSearchResults,
     RagDataset,
+    StudentSearchResults,
     StudentSearchResultsAndAnswer,
 )
+from .rrf import reciprocal_rank_fusion
+from .semantic import Semantic
 
 
 class RAG(object):
@@ -97,12 +94,15 @@ class RAG(object):
                 }
             )
 
+    @lru_cache
     def search(self, query: str, k: int = 1) -> MinimalSearchResults:
         semantic_results = self.semantic.search(query, k * 2)
         lexical_results = self.lexical.search(query, k * 2)
         combined_results = reciprocal_rank_fusion(
             [semantic_results, lexical_results]
         )
+        if k == 0:
+            exit()
         retrieved_sources: list[MinimalSource] = []
         for metadatas in combined_results[:k]:
             retrieved_sources.append(
@@ -143,6 +143,8 @@ class RAG(object):
         print(f"The search dataset is saved on {str(full_path)}")
 
     def answer(self, query: str, k: int = 1) -> MinimalAnswer:
+        if k == 0:
+            exit()
         search_result: MinimalSearchResults = self.search(query, k)
         augmented_query = (
             "system:\n"
@@ -177,17 +179,8 @@ class RAG(object):
         answers: list[MinimalAnswer] = []
         with open(student_search_results_path) as file:
             search_results = StudentSearchResults(**json.load(file))
-            with Progress() as progress:
-                task3 = progress.add_task(
-                    "answering questions: ",
-                    total=len(search_results.search_results),
-                )
-                for res in search_results.search_results:
-                    answers.append(self.answer(res.question, search_results.k))
-                    progress.update(
-                        task3,
-                        advance=len(search_results.search_results) * 0.01,
-                    )
+            for res in search_results.search_results:
+                answers.append(self.answer(res.question, search_results.k))
 
         search_results_and_answer = StudentSearchResultsAndAnswer(
             search_results=answers, k=search_results.k
@@ -199,6 +192,11 @@ class RAG(object):
             json.dump(search_results_and_answer.model_dump(), file, indent=4)
 
         print(f"Saved Student_search_results_and_answer to {path}")
+
+    def evaluate(
+        self, student_search_results_path: str, dataset_path: str
+    ) -> None:
+        pass
 
 
 if __name__ == "__main__":
