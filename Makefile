@@ -17,7 +17,7 @@ clean:
 	@echo "\e[42m\e[30m Directory is cleaned \e[0m"
 
 lint:
-	-uv run python3 -m flake8 . --exclude=.venv
+	-uv run python3 -m flake8 . --exclude=.venv,data
 	-uv run python3 -m mypy . --warn-return-any \
 		--warn-unused-ignores --ignore-missing-imports \
 		--disallow-untyped-defs --check-untyped-defs

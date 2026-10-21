@@ -12,3 +12,4 @@ wheels/
 data/
 moulinette*
 chunks.json
+cache/

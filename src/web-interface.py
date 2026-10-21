@@ -15,6 +15,13 @@ app.add_middleware(
 
 
 class Query(BaseModel):
+    """Request payload used by the HTTP API to query the RAG system.
+
+    Attributes:
+        message: The user question to answer.
+        k: Number of retrieved sources to provide to the model.
+    """
+
     message: str
     k: int = 5
 
@@ -23,6 +30,14 @@ rag = RAG()
 
 
 @app.post("/")
-def search(q: Query):
+def search(q: Query) -> dict:
+    """Answer a question through the local HTTP API.
+
+    Args:
+        q: Incoming request with the query message and result count.
+
+    Returns:
+        A dictionary containing the generated answer text.
+    """
     answer = rag.answer(q.message, k=q.k)
     return {"message": answer.answer}

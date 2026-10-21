@@ -1,16 +1,16 @@
+import hashlib
 import json
 import uuid
-from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 import fire
-from langchain_core.documents.base import Document
-from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 from tqdm import tqdm
 
+from .caching import load_cache_query, save_cache_query
+from .chunking import Chunker
+from .evaluator import evaluate
 from .lexical import Lexical
-from .LLM import Lmachine
+from .LLM import LLM
 from .Models import (
     MinimalAnswer,
     MinimalSearchResults,
@@ -24,78 +24,84 @@ from .semantic import Semantic
 
 
 class RAG(object):
+    """Main orchestrator for the repository RAG pipeline.
+
+    The class coordinates indexing, retrieval, answer generation,
+    and evaluation
+    for codebase questions.
+    """
+
     def __init__(self) -> None:
+        """Initialize the project paths and retrieval components."""
         self.path: Path = Path("data/")
         self.data: Path = self.path / "raw/vllm-0.10.1"
         self.output: Path = self.path / "output/"
-        self.chunks: list[dict[str, Any]] = []
-        self.ext: set[str] = {".py", ".md", ".txt"}
-        self.model: Lmachine = Lmachine()
+        self.chunker: Chunker = Chunker()
+        self.model: LLM = LLM()
         self.lexical: Lexical = Lexical()
         self.semantic: Semantic = Semantic()
+        self.is_direct: bool = True
+        self.cache_query: Path = Path("cache/querys.pkl")
+        self.cache_meta: Path = Path("cache/meta.json")
+        self.changed: bool = False
 
     def index(self, max_chunk_size: int = 2000) -> None:
-        config = {
-            "chunk_size": max_chunk_size,
-            "chunk_overlap": int(max_chunk_size * 0.05),
-            "add_start_index": True,
-        }
-        splitters: dict[str, RecursiveCharacterTextSplitter] = {
-            ".py": RecursiveCharacterTextSplitter.from_language(
-                Language.PYTHON, **config
-            ),
-            ".txt": RecursiveCharacterTextSplitter.from_language(
-                Language.MARKDOWN, **config
-            ),
-            ".md": RecursiveCharacterTextSplitter.from_language(
-                Language.MARKDOWN, **config
-            ),
-        }
+        """Index the repository corpus and persist the processed
+        retrieval data.
 
-        files = [
-            file for file in self.data.rglob("*") if file.suffix in self.ext
-        ]
-        for file in tqdm(files, desc="Chunking: "):
-            splitter = splitters[file.suffix]
-            splitted_text: list[Document] = splitter.create_documents(
-                [file.read_text()]
-            )
-            self._save_chunks(
-                splitted_text,
-                file,
-            )
-
-        documents: list[str] = [doc["content"] for doc in self.chunks]
-        self.lexical.index(documents, self.chunks)
-
-        self.semantic.index(documents, self.chunks)
+        Args:
+            max_chunk_size: Maximum length of an indexed chunk in characters.
+        """
+        state, chunks = self.chunker.chunk(max_chunk_size)
+        if state == "exit":
+            return
+        documents: list[str] = [doc["content"] for doc in chunks]
+        h = hashlib.sha256("".join(documents).encode())
+        meta = {"max_chunk_size": max_chunk_size, "corpus": h.hexdigest()}
+        if self.cache_meta.exists():
+            with open(self.cache_meta) as file:
+                loaded_meta = json.load(file)
+            if meta != loaded_meta:
+                self.changed = True
+        if state == "build":
+            self.lexical.index(chunks)
+        elif state == "sync":
+            self.lexical.reindex(chunks)
+        self.semantic.index(documents, chunks, self.changed)
 
         print(
-            f"Ingestion complete! Indexed {len(self.chunks)} "
+            f"Ingestion complete! Indexed {len(chunks)} "
             "chunks under data/processed"
         )
 
-    def _save_chunks(self, splitted_text: list[Document], path: Path) -> None:
-        for i, document in enumerate(splitted_text):
-            start: int = document.metadata["start_index"]
-            content: str = document.page_content
-            _id: str = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL, f"{str(path)}:{content}:{start}"
-                )
-            )
-            self.chunks.append(
-                {
-                    "id": _id,
-                    "file_path": str(path),
-                    "content": content,
-                    "first_character_index": start,
-                    "last_character_index": start + len(content),
-                }
-            )
+    def search(self, query: str, k: int = 1) -> MinimalSearchResults | None:
+        """Retrieve the top-k source locations for a single
+        natural-language query.
 
-    @lru_cache
-    def search(self, query: str, k: int = 1) -> MinimalSearchResults:
+        Args:
+            query: The question to search for.
+            k: Maximum number of sources to return.
+
+        Returns:
+            A `MinimalSearchResults` object when running programmatically.
+            If the method is used in direct CLI mode,
+            it prints results instead.
+        """
+        querys = {}
+        if self.cache_query.exists() and not self.changed:
+            querys = load_cache_query(self.cache_query)
+            if query in querys:
+                res = MinimalSearchResults(**querys[query])
+                if self.is_direct:
+                    for source in res.retrieved_sources:
+                        print(
+                            f"{source.file_path}"
+                            f"[{source.first_character_index}:"
+                            f"{source.last_character_index}]"
+                        )
+                    return None
+                else:
+                    return res
         semantic_results = self.semantic.search(query, k * 2)
         lexical_results = self.lexical.search(query, k * 2)
         combined_results = reciprocal_rank_fusion(
@@ -119,17 +125,39 @@ class RAG(object):
             question=query,
             retrieved_sources=retrieved_sources,
         )
-        return search_result
+        querys[query] = search_result.model_dump()
+        save_cache_query(self.cache_query, querys)
+        if self.is_direct:
+            for source in retrieved_sources:
+                print(
+                    f"{source.file_path}"
+                    f"[{source.first_character_index}:"
+                    f"{source.last_character_index}]"
+                )
+            return None
+        else:
+            return search_result
 
     def search_dataset(
         self, dataset_path: str, k: int, save_directory: str
     ) -> None:
+        """Run retrieval over a dataset and persist the resulting JSON output.
+
+        Args:
+            dataset_path: Path to the dataset file containing questions.
+            k: Number of sources to retrieve per question.
+            save_directory: Directory where the search results JSON
+            should be saved.
+        """
+        self.is_direct = False
         search_result: list[MinimalSearchResults] = []
         with open(dataset_path) as file:
             dataset: RagDataset = RagDataset(**json.load(file))
 
             for question in tqdm(dataset.rag_questions, "Searching: "):
                 res = self.search(question.question, k)
+                if res is None:
+                    return
                 res.question_id = question.question_id
                 search_result.append(res)
             student_search = StudentSearchResults(
@@ -143,9 +171,23 @@ class RAG(object):
         print(f"The search dataset is saved on {str(full_path)}")
 
     def answer(self, query: str, k: int = 1) -> MinimalAnswer:
+        """Generate a grounded answer for a question using retrieved snippets.
+
+        Args:
+            query: The question text to answer.
+            k: Number of source snippets to include as context.
+
+        Returns:
+            A `MinimalAnswer` object containing the retrieved sources
+            and final answer.
+
+        Raises:
+            ValueError: If the model does not return any content.
+        """
         if k == 0:
             exit()
-        search_result: MinimalSearchResults = self.search(query, k)
+        self.is_direct = False
+        search_result: MinimalSearchResults | None = self.search(query, k)
         augmented_query = (
             "system:\n"
             "You are a helpful assistant. Answer the question "
@@ -154,6 +196,8 @@ class RAG(object):
             "user:\n"
             "Context:\n\n"
         )
+        if search_result is None:
+            return
         for idx, result in enumerate(search_result.retrieved_sources, start=1):
             with open(result.file_path, errors="replace") as file:
                 file.seek(result.first_character_index)
@@ -168,7 +212,7 @@ class RAG(object):
 
         augmented_query += f"Question: {query}\n\n"
         augmented_query += "Answer: "
-        content = self.model.dwiha(augmented_query)
+        content = self.model.generate(augmented_query)
         if content is None:
             raise ValueError("Ok bon8 a khoya!")
         return MinimalAnswer(answer=content, **search_result.model_dump())
@@ -176,6 +220,13 @@ class RAG(object):
     def answer_dataset(
         self, student_search_results_path: str, save_directory: str
     ) -> None:
+        """Generate answers for every question in a retrieval JSON result file.
+
+        Args:
+            student_search_results_path: Path to the saved retrieval dataset.
+            save_directory: Directory where the answer dataset
+            JSON should be written.
+        """
         answers: list[MinimalAnswer] = []
         with open(student_search_results_path) as file:
             search_results = StudentSearchResults(**json.load(file))
@@ -196,7 +247,17 @@ class RAG(object):
     def evaluate(
         self, student_search_results_path: str, dataset_path: str
     ) -> None:
-        pass
+        """Compute recall@k for the current retrieval output against a dataset.
+
+        Args:
+            student_search_results_path: Path to the
+            student-generated search file.
+            dataset_path: Path to the ground-truth dataset.
+        """
+        k_values = [1, 3, 5, 10]
+
+        for k in k_values:
+            evaluate(student_search_results_path, dataset_path, k)
 
 
 if __name__ == "__main__":
