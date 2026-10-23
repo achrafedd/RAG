@@ -74,4 +74,4 @@ def evaluate(student_path: str, right_answers_path: str, k: int) -> None:
         questions_counter += 1
 
     recall = total_score / questions_counter if questions_counter > 0 else 0.0
-    print(f"recall@{k} score = {recall}")
+    print(f"recall@{k} score = {recall:.2f}%")

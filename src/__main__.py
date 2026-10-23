@@ -41,7 +41,6 @@ class RAG(object):
         self.lexical: Lexical = Lexical()
         self.semantic: Semantic = Semantic()
         self.is_direct: bool = True
-        self.cache_query: Path = Path("cache/querys.pkl")
         self.cache_meta: Path = Path("cache/meta.json")
         self.changed: bool = False
 
@@ -88,8 +87,9 @@ class RAG(object):
             it prints results instead.
         """
         querys = {}
-        if self.cache_query.exists() and not self.changed:
-            querys = load_cache_query(self.cache_query)
+        cache_query = Path(f"cache/cache_query_{k}.pkl")
+        if cache_query.exists() and not self.changed:
+            querys = load_cache_query(cache_query)
             if query in querys:
                 res = MinimalSearchResults(**querys[query])
                 if self.is_direct:
@@ -102,6 +102,7 @@ class RAG(object):
                     return None
                 else:
                     return res
+
         semantic_results = self.semantic.search(query, k * 2)
         lexical_results = self.lexical.search(query, k * 2)
         combined_results = reciprocal_rank_fusion(
@@ -126,7 +127,7 @@ class RAG(object):
             retrieved_sources=retrieved_sources,
         )
         querys[query] = search_result.model_dump()
-        save_cache_query(self.cache_query, querys)
+        save_cache_query(cache_query, querys)
         if self.is_direct:
             for source in retrieved_sources:
                 print(
@@ -261,4 +262,7 @@ class RAG(object):
 
 
 if __name__ == "__main__":
-    fire.Fire(RAG)
+    try:
+        fire.Fire(RAG)
+    except BaseException as e:
+        print(e)

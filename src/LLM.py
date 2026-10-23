@@ -49,9 +49,8 @@ class LLM:
         )
 
         output_ids = generated_ids[0][
-            len(model_inputs.input_ids[0]) :
+            len(model_inputs.input_ids[0]):
         ].tolist()
-
         content = self.tokenizer.decode(
             output_ids, skip_special_tokens=True
         ).strip("\n")
